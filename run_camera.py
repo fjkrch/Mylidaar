@@ -9,7 +9,7 @@ if __name__ == '__main__':
     # Argument parser for customizable options
     parser = argparse.ArgumentParser(description='Depth Anything V2 Real-Time')
     parser.add_argument('--input-size', type=int, default=518, help='Input size for the model')
-    parser.add_argument('--encoder', type=str, default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'], help='Choice of encoder model')
+    parser.add_argument('--encoder', type=str, default='vits', choices=['vits', 'vitb', 'vitl', 'vitg'], help='Choice of encoder model')
     parser.add_argument('--grayscale', dest='grayscale', action='store_true', help='Do not apply colorful palette')
     parser.add_argument('--pred-only', dest='pred_only', action='store_true', help='Only display the prediction')
     args = parser.parse_args()
@@ -31,7 +31,7 @@ if __name__ == '__main__':
     depth_anything = depth_anything.to(DEVICE).eval()
 
     # Initialize webcam and face detection
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Use DirectShow instead of MSMF  # Open default webcam
+    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)  # Use DirectShow instead of MSMF  # Open default webcam
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
     # Set your camera's focal length (in pixels)

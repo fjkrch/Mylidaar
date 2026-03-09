@@ -1,1 +1,33 @@
-checkpoints/depth_anything_v2_vitl.pth
+# Virtual environment
+.venv/
+.env
+.env.*
+
+# Model checkpoints (large files)
+checkpoints/*.pth
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+*.so
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Output files
+*.ply
+vis_video_depth/
+output/
