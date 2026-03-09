@@ -2,14 +2,19 @@ import argparse
 import cv2
 import matplotlib
 import numpy as np
+import os
 import torch
 from depth_anything_v2.dpt import DepthAnythingV2
+from download_model import ensure_model
 
 if __name__ == '__main__':
     # Argument parser for customizable options
     parser = argparse.ArgumentParser(description='Depth Anything V2 Real-Time')
     parser.add_argument('--input-size', type=int, default=518, help='Input size for the model')
-    parser.add_argument('--encoder', type=str, default='vits', choices=['vits', 'vitb', 'vitl', 'vitg'], help='Choice of encoder model')
+    parser.add_argument('--encoder', type=str, default='vits', choices=['vits', 'vitb', 'vitl'], help='Encoder model (vits=small/fast, vitb=base, vitl=large/accurate)')
+    parser.add_argument('--camera', type=int, default=0, help='Camera index (0=default webcam, 1=second camera, etc.)')
+    parser.add_argument('--focal-length', type=float, default=800.0, help='Camera focal length in pixels (see README for calibration)')
+    parser.add_argument('--face-width', type=float, default=13.0, help='Known real face width in cm (default: 13 cm average)')
     parser.add_argument('--grayscale', dest='grayscale', action='store_true', help='Do not apply colorful palette')
     parser.add_argument('--pred-only', dest='pred_only', action='store_true', help='Only display the prediction')
     args = parser.parse_args()
@@ -22,21 +27,28 @@ if __name__ == '__main__':
         'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
         'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
         'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-        'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
     }
+
+    # Auto-download model weights if not present
+    model_path = ensure_model(args.encoder)
 
     # Load Depth Anything V2 model
     depth_anything = DepthAnythingV2(**model_configs[args.encoder])
-    depth_anything.load_state_dict(torch.load(f'checkpoints/depth_anything_v2_{args.encoder}.pth', map_location='cpu'))
+    depth_anything.load_state_dict(torch.load(model_path, map_location='cpu'))
     depth_anything = depth_anything.to(DEVICE).eval()
 
     # Initialize webcam and face detection
-    cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)  # Use DirectShow instead of MSMF  # Open default webcam
+    cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)  # Use DirectShow on Windows
+    if not cap.isOpened():
+        print(f"Error: Cannot open camera {args.camera}")
+        exit(1)
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
 
-    # Set your camera's focal length (in pixels)
-    focal_length_px = 800  # Adjust this for your camera
-    real_face_width_cm = 13  # Average human face width in cm
+    # Camera parameters for pinhole model distance estimation
+    # focal_length_px: focal length in pixels (calibrate per camera, see README)
+    # real_face_width_cm: known width of a human face in cm
+    focal_length_px = args.focal_length
+    real_face_width_cm = args.face_width
 
     while True:
         ret, frame = cap.read()
@@ -72,14 +84,18 @@ if __name__ == '__main__':
             cmap = matplotlib.colormaps.get_cmap('Spectral_r')
             depth_resized = (cmap(depth_resized)[:, :, :3] * 255)[:, :, ::-1].astype(np.uint8)
 
+        # Resize depth to frame dimensions once (used for face depth lookup)
+        depth_for_display = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
+
         # Detect faces and calculate distance
         for (x, y, w, h) in faces:
             center_x = x + w // 2
             center_y = y + h // 2
-            depth_for_display = cv2.resize(depth, (frame.shape[1], frame.shape[0]))
             if center_y < depth_for_display.shape[0] and center_x < depth_for_display.shape[1]:
                 face_depth = depth_for_display[center_y, center_x]
-                estimated_distance_cm = (real_face_width_cm * focal_length_px) / w  # Distance estimation from camera
+                # Pinhole model: Z = (f * L) / l_px
+                # f = focal length (px), L = real face width (cm), l_px = face width in image (px)
+                estimated_distance_cm = (real_face_width_cm * focal_length_px) / w
 
                 # Draw face rectangle and display depth information
                 cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -131,7 +147,7 @@ end_header
             upper_bound = Q3 + 1.5 * IQR
 
             filtered_depth = depth_for_save[(depth_for_save >= lower_bound) & (depth_for_save <= upper_bound)]
-            filtered_depth = np.percentile(filtered_depth,95)  # Use 99th percentile to avoid outliers
+            filtered_depth = np.percentile(filtered_depth, 95)  # Use 95th percentile to avoid outliers
             max_ai_depth = np.max(filtered_depth)
             face_depths = []
             for (x, y, w, h) in faces:
@@ -149,10 +165,19 @@ end_header
                     # Multiply Z axis by scale after subtracting face_depth
                     scaled_z = (depth_for_save - face_depth) * scale
                     points_scaled = np.stack([xx.flatten(), yy.flatten(), scaled_z.flatten()], axis=1)
-                    comment = f"# a1: 1 AI depth unit = {scale:.4f} cm (face depth={face_depth:.2f}, pinhole={pinhole_estimate_cm:.2f}cm, max AI depth={max_ai_depth:.2f})\n"
+                    # Store scaling metadata as a PLY comment (valid PLY spec)
+                    scaling_comment = f"comment scale: 1 AI depth unit = {scale:.4f} cm (face_depth={face_depth:.2f}, pinhole={pinhole_estimate_cm:.2f}cm, max_ai_depth={max_ai_depth:.2f})"
+                    scaled_header = f"""ply
+format ascii 1.0
+{scaling_comment}
+element vertex {points_scaled.shape[0]}
+property float x
+property float y
+property float z
+end_header
+"""
                     with open('depth_points_scaled.ply', 'w') as f:
-                        f.write(comment)
-                        f.write(ply_header.format(vertex_count=points_scaled.shape[0]))
+                        f.write(scaled_header)
                         np.savetxt(f, points_scaled, fmt='%.4f %.4f %.4f')
                     print("Scaled PLY point cloud saved as depth_points_scaled.ply")
        
